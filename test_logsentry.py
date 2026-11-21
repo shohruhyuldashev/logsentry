@@ -1,8 +1,17 @@
+import csv
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from logsentry import analyze_users, detect_anomalies, parse_file, parse_line
+from logsentry import (
+    analyze_users,
+    detect_anomalies,
+    export_report,
+    parse_file,
+    parse_line,
+    resolve_export_format,
+)
 
 
 class ParseLineTests(unittest.TestCase):
@@ -118,6 +127,36 @@ class AnomalyDetectionTests(unittest.TestCase):
             for alert in detect_anomalies(spray_entries + distributed_entries + enum_entries)
         }
         self.assertTrue({"PASSWORD_SPRAY", "DISTRIBUTED_ATTACK", "USERNAME_ENUMERATION"} <= alert_types)
+
+
+class ExportTests(unittest.TestCase):
+    RESULT = {
+        "summary": {"total_lines": 2, "parsed_entries": 2},
+        "users": [{"user": "alice", "total": 2, "successful": 1, "failed": 1,
+                   "success_rate": 50.0, "unique_ips": 1, "first_seen": "t1", "last_seen": "t2"}],
+        "alerts": [{"type": "BRUTE_FORCE", "severity": "CRITICAL", "timestamp": "t2",
+                    "ip": "10.0.0.1", "user": "alice", "count": 8,
+                    "window_minutes": 15, "detail": "test"}],
+    }
+
+    def test_exports_json_and_csv(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory) / "nested"
+            json_file = output_dir / "report.json"
+            csv_file = output_dir / "report.csv"
+            export_report(self.RESULT, json_file, "json")
+            export_report(self.RESULT, csv_file, "csv")
+            self.assertEqual(json.loads(json_file.read_text(encoding="utf-8")), self.RESULT)
+            with csv_file.open(encoding="utf-8", newline="") as source:
+                rows = list(csv.DictReader(source))
+        self.assertEqual([row["record_type"] for row in rows], ["summary", "summary", "user", "alert"])
+        self.assertEqual(rows[-1]["alert_type"], "BRUTE_FORCE")
+
+    def test_inferrs_format_from_extension(self):
+        self.assertEqual(resolve_export_format(Path("result.json"), None), "json")
+        self.assertEqual(resolve_export_format(Path("result.csv"), None), "csv")
+        with self.assertRaises(ValueError):
+            resolve_export_format(Path("result.txt"), None)
 
 
 if __name__ == "__main__":

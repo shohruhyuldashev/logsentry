@@ -70,6 +70,8 @@ python3 logsentry.py --min-failures 10       # set the alert threshold
 python3 logsentry.py --json                  # JSON for another tool/script
 python3 logsentry.py --verbose               # show parsed and skipped lines
 python3 logsentry.py --color always           # force terminal colors
+python3 logsentry.py --output report.json     # save full report as JSON
+python3 logsentry.py --output report.csv      # save full report as CSV
 ```
 
 `--user` may be repeated, for example:
@@ -92,6 +94,27 @@ python3 logsentry.py auth.log \
 Use `--color auto` (default), `--color always`, or `--color never`. JSON output
 contains `summary`, `users`, and structured `alerts`; it never includes ANSI
 color codes.
+
+## Save a report file
+
+Use `--output` to save the complete analysis instead of copying terminal text.
+The format is inferred from the filename extension:
+
+```bash
+python3 logsentry.py auth.log --output reports/auth-report.json
+python3 logsentry.py auth.log --output reports/auth-report.csv
+```
+
+If the filename has no `.json` or `.csv` extension, select the format directly:
+
+```bash
+python3 logsentry.py auth.log --output reports/week1-result --format json
+python3 logsentry.py auth.log --output reports/week1-result --format csv
+```
+
+JSON preserves the nested `summary`, `users`, and `alerts` structure. CSV is
+spreadsheet-friendly: its `record_type` column identifies each row as
+`summary`, `user`, or `alert`. Missing output folders are created automatically.
 
 ## Example report
 

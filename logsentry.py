@@ -7,6 +7,7 @@ amortized time for n log lines.
 """
 
 import argparse
+import csv
 import ipaddress
 import json
 import re
@@ -356,6 +357,51 @@ def print_alert_report(alerts: List[Dict[str, Any]], colors: Colors) -> None:
         print(f"  {alert['timestamp']} | {alert['count']} signal(s) in {alert['window_minutes']} min — {alert['detail']}")
 
 
+def export_report(result: Dict[str, Any], output_path: Path, output_format: str) -> None:
+    """Save the complete analysis result as JSON or a flat, spreadsheet-safe CSV.
+
+    CSV uses a ``record_type`` column.  Summary values, user analysis rows and
+    anomaly alerts remain distinguishable while still fitting in one file.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_format == "json":
+        output_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        return
+
+    columns = (
+        "record_type", "summary_key", "summary_value", "user", "total",
+        "successful", "failed", "success_rate", "unique_ips", "first_seen",
+        "last_seen", "alert_type", "severity", "timestamp", "ip", "count",
+        "window_minutes", "detail",
+    )
+    with output_path.open("w", encoding="utf-8", newline="") as output_file:
+        writer = csv.DictWriter(output_file, fieldnames=columns)
+        writer.writeheader()
+        for key, value in result["summary"].items():
+            writer.writerow({"record_type": "summary", "summary_key": key, "summary_value": value})
+        for user in result["users"]:
+            writer.writerow({"record_type": "user", **user})
+        for alert in result["alerts"]:
+            writer.writerow({
+                "record_type": "alert", "alert_type": alert["type"],
+                "severity": alert["severity"], "timestamp": alert["timestamp"],
+                "ip": alert["ip"], "user": alert["user"], "count": alert["count"],
+                "window_minutes": alert["window_minutes"], "detail": alert["detail"],
+            })
+
+
+def resolve_export_format(output_path: Optional[Path], requested_format: Optional[str]) -> Optional[str]:
+    """Use an explicit export format or infer it safely from the file extension."""
+    if output_path is None:
+        return None
+    if requested_format:
+        return requested_format
+    inferred = {".json": "json", ".csv": "csv"}.get(output_path.suffix.lower())
+    if inferred is None:
+        raise ValueError("Cannot infer export format; use --format json or --format csv.")
+    return inferred
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Create the command-line interface."""
     parser = argparse.ArgumentParser(
@@ -374,6 +420,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-user-report", action="store_true", help="Hide the per-user table")
     parser.add_argument("--no-alerts", action="store_true", help="Hide anomaly alerts")
     parser.add_argument("--json", action="store_true", help="Print the complete report as JSON")
+    parser.add_argument("--output", type=Path, metavar="FILE", help="Save the complete report to FILE")
+    parser.add_argument("--format", choices=("json", "csv"), dest="export_format", help="Export format; inferred from FILE extension when omitted")
     return parser
 
 
@@ -412,8 +460,16 @@ def main() -> int:
     }
     report = analyze_users(entries)
     selected_report = report if not args.user else [row for row in report if row["user"] in set(args.user)]
+    result = {"summary": summary, "users": selected_report, "alerts": alerts}
+    try:
+        export_format = resolve_export_format(args.output, args.export_format)
+        if export_format:
+            export_report(result, args.output, export_format)
+    except (OSError, ValueError) as error:
+        print(f"Error: could not save report: {error}", file=sys.stderr)
+        return 1
     if args.json:
-        print(json.dumps({"summary": summary, "users": selected_report, "alerts": alerts}, indent=2))
+        print(json.dumps(result, indent=2))
         return 0
 
     colors = Colors(args.color)
@@ -430,6 +486,8 @@ def main() -> int:
         print_user_report(selected_report, colors)
     if not args.no_alerts:
         print_alert_report(alerts, colors)
+    if args.output:
+        print(f"\nSaved {export_format.upper()} report: {args.output}")
     return 0
 
 
