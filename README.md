@@ -91,6 +91,9 @@ python3 logsentry.py auth.log \
   --enumeration-threshold 4
 ```
 
+<img width="1325" height="649" alt="image" src="https://github.com/user-attachments/assets/b7cb8ce0-22f6-48f3-bd7a-9b12103e14d7" />
+
+
 Use `--color auto` (default), `--color always`, or `--color never`. JSON output
 contains `summary`, `users`, and structured `alerts`; it never includes ANSI
 color codes.
