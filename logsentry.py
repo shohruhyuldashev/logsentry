@@ -317,6 +317,32 @@ def analyze_users(entries: Iterable[Dict[str, str]]) -> List[Dict[str, Any]]:
     return sorted(report, key=lambda row: (-row["failed"], -row["total"], row["user"]))
 
 
+def analyze_failed_ips(entries: Iterable[Dict[str, str]]) -> List[Dict[str, Any]]:
+    """Return source IPs ranked by failed-login count for Week 2 triage."""
+    stats: Dict[str, Dict[str, Any]] = defaultdict(
+        lambda: {"ip": "", "failed": 0, "users": set(), "first_seen": "", "last_seen": ""}
+    )
+    for entry in entries:
+        if entry["status"] != "FAILED":
+            continue
+        item = stats[entry["ip"]]
+        item["ip"] = entry["ip"]
+        item["failed"] += 1
+        item["users"].add(entry["user"])
+        if not item["first_seen"]:
+            item["first_seen"] = entry["timestamp"]
+        item["last_seen"] = entry["timestamp"]
+    report = [
+        {
+            "ip": item["ip"], "failed": item["failed"],
+            "targeted_users": len(item["users"]), "first_seen": item["first_seen"],
+            "last_seen": item["last_seen"],
+        }
+        for item in stats.values()
+    ]
+    return sorted(report, key=lambda row: (-row["failed"], -row["targeted_users"], row["ip"]))
+
+
 def print_preview(entries: List[Dict[str, str]], colors: Colors) -> None:
     """Print a five-line colored preview."""
     print("\n" + colors.paint("Preview (first 5 parsed entries)", "bold", "cyan"))
@@ -341,6 +367,19 @@ def print_user_report(report: List[Dict[str, Any]], colors: Colors) -> None:
         failures = colors.paint(f"{item['failed']:>5}", "red") if item["failed"] else f"{0:>5}"
         successful = colors.paint(f"{item['successful']:>5}", "green") if item["successful"] else f"{0:>5}"
         print(f"{item['user']:<18} {item['total']:>5} {successful} {failures} {item['success_rate']:>6.1f}% {item['unique_ips']:>4}")
+
+
+def print_failed_ip_report(report: List[Dict[str, Any]], limit: int, colors: Colors) -> None:
+    """Print the requested number of IPs with the most failed logins."""
+    print("\n" + colors.paint(f"Top {limit} source IPs by failed logins", "bold", "cyan"))
+    if not report:
+        print(colors.paint("No failed logins found.", "green"))
+        return
+    print(f"{'IP address':<39} {'Fails':>5} {'Users':>5}  Last seen")
+    print(colors.paint("-" * 75, "dim"))
+    for item in report[:limit]:
+        failures = colors.paint(f"{item['failed']:>5}", "red")
+        print(f"{item['ip']:<39} {failures} {item['targeted_users']:>5}  {item['last_seen']}")
 
 
 def print_alert_report(alerts: List[Dict[str, Any]], colors: Colors) -> None:
@@ -371,8 +410,8 @@ def export_report(result: Dict[str, Any], output_path: Path, output_format: str)
     columns = (
         "record_type", "summary_key", "summary_value", "user", "total",
         "successful", "failed", "success_rate", "unique_ips", "first_seen",
-        "last_seen", "alert_type", "severity", "timestamp", "ip", "count",
-        "window_minutes", "detail",
+        "last_seen", "ip", "targeted_users", "alert_type", "severity",
+        "timestamp", "count", "window_minutes", "detail",
     )
     with output_path.open("w", encoding="utf-8", newline="") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=columns)
@@ -381,6 +420,8 @@ def export_report(result: Dict[str, Any], output_path: Path, output_format: str)
             writer.writerow({"record_type": "summary", "summary_key": key, "summary_value": value})
         for user in result["users"]:
             writer.writerow({"record_type": "user", **user})
+        for ip in result.get("failed_ips", []):
+            writer.writerow({"record_type": "failed_ip", **ip})
         for alert in result["alerts"]:
             writer.writerow({
                 "record_type": "alert", "alert_type": alert["type"],
@@ -418,6 +459,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--compromise-threshold", type=int, default=3, metavar="COUNT", help="Failures before later success alert (default: 3)")
     parser.add_argument("--color", choices=("auto", "always", "never"), default="auto", help="ANSI color mode (default: auto)")
     parser.add_argument("--no-user-report", action="store_true", help="Hide the per-user table")
+    parser.add_argument("--top-ips", type=int, default=5, metavar="COUNT", help="Number of failed-login source IPs to show (default: 5)")
+    parser.add_argument("--no-ip-report", action="store_true", help="Hide the failed-login IP table")
     parser.add_argument("--no-alerts", action="store_true", help="Hide anomaly alerts")
     parser.add_argument("--json", action="store_true", help="Print the complete report as JSON")
     parser.add_argument("--output", type=Path, metavar="FILE", help="Save the complete report to FILE")
@@ -427,7 +470,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _validate_thresholds(args: argparse.Namespace) -> Optional[str]:
     values = (args.window_minutes, args.brute_force_threshold, args.spray_threshold,
-              args.distributed_threshold, args.enumeration_threshold, args.compromise_threshold)
+              args.distributed_threshold, args.enumeration_threshold, args.compromise_threshold,
+              args.top_ips)
     return "All window and threshold values must be at least 1." if any(value < 1 for value in values) else None
 
 
@@ -459,8 +503,9 @@ def main() -> int:
         "skipped_lines": skipped,
     }
     report = analyze_users(entries)
+    ip_report = analyze_failed_ips(entries)
     selected_report = report if not args.user else [row for row in report if row["user"] in set(args.user)]
-    result = {"summary": summary, "users": selected_report, "alerts": alerts}
+    result = {"summary": summary, "users": selected_report, "failed_ips": ip_report, "alerts": alerts}
     try:
         export_format = resolve_export_format(args.output, args.export_format)
         if export_format:
@@ -484,6 +529,8 @@ def main() -> int:
     print(f"Check: {len(entries)} parsed + {skipped} skipped = {summary['total_lines']} total")
     if not args.no_user_report:
         print_user_report(selected_report, colors)
+    if not args.no_ip_report:
+        print_failed_ip_report(ip_report, args.top_ips, colors)
     if not args.no_alerts:
         print_alert_report(alerts, colors)
     if args.output:

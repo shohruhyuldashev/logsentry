@@ -1,159 +1,203 @@
-# LogSentry: SSH Login Log Analyzer
+# LogSentry — SSH Login Log Analyzer
 
-LogSentry reads SSH authentication logs and turns raw login messages into a
-clear per-user security report. It is a Week 1 cybersecurity internship project
-that uses generated data by default, but it can also read compatible SSH logs
-that you are authorized to analyse.
+LogSentry is a Python command-line tool that reads SSH authentication logs,
+summarises login activity, and detects suspicious patterns with sliding time
+windows. It was extended for **SkillMe Cybersecurity Virtual Internship — Week
+2: Detecting Repeated Failed Logins**.
 
-## Legal & Ethical Note
+The project uses only Python's standard library. No installation or external
+packages are required.
 
-Scanning or attacking systems you do not own or do not have written permission
-to test is illegal. Analyse only logs you own or have permission to review.
-The included `sample_auth.log` contains fictional users and private IP
-addresses only.
+> **Ethical use:** analyse only logs you own or are explicitly authorised to
+> review. The included sample contains fictional accounts and private IP
+> addresses.
 
-## What it does
+## Week 2 result
 
-- Reads the input file one line at a time.
-- Extracts timestamp, hostname (when present), username, IP, authentication
-  method and login status with regular expressions.
-- Discovers usernames from the log itself; it does **not** use a fixed list of
-  accounts or restrict addresses to a single private subnet.
-- Supports the project format and common Linux `sshd` lines, including failed
-  passwords, accepted password/public-key logins, invalid users, IPv4 and IPv6.
-- Safely skips malformed or unsupported lines instead of crashing.
-- Reports total, success, failure, success rate, unique source IPs, first seen
-  and last seen for every discovered account.
-- Highlights accounts whose failed-logins reach the selected threshold.
-- Can return a machine-readable JSON report.
-
-## Security anomaly detection
-
-For chronological log files, LogSentry uses sliding-window queues and
-incrementally maintained counters. Every event is added once and removed once,
-so detection is **O(n) amortized time** for `n` parsed records; it does not
-rescan the file for each username or IP.
-
-It detects these high-value authentication signals:
-
-- **Brute force:** repeated failures from one IP against one account.
-- **Password spray:** one IP fails against many accounts.
-- **Distributed attack:** many IPs fail against one account.
-- **Username enumeration:** one IP probes many invalid usernames.
-- **Success after failures:** a successful login follows repeated failures for
-  the same IP/account pair, which merits investigation.
-
-One profile is shown once per run, avoiding repeated alert spam from a long log.
-The default window is 15 minutes and every threshold is configurable.
-
-## Included sample format
-
-```text
-2025-01-15 10:23:45 sshd[1234]: Failed password for user alice from 192.168.1.15
-2025-01-15 10:24:02 sshd[1234]: Accepted password for user bob from 192.168.1.20
-```
-
-Linux-style entries work as well:
-
-```text
-Jan 15 10:23:45 server-01 sshd[1234]: Failed password for root from 203.0.113.7 port 443 ssh2
-```
-
-## Run it
+The included sample log deliberately contains eight failed logins against
+`admin` from `192.168.1.15` within 105 seconds. With the setting below, the
+fifth failure raises a `BRUTE_FORCE` alert:
 
 ```bash
-cd ~/SkillMe/logsentry
-python3 logsentry.py                         # analyse sample_auth.log
-python3 logsentry.py /path/to/auth.log       # analyse another authorised log
-python3 logsentry.py --user alice            # report one discovered account
-python3 logsentry.py --min-failures 10       # set the alert threshold
-python3 logsentry.py --json                  # JSON for another tool/script
-python3 logsentry.py --verbose               # show parsed and skipped lines
-python3 logsentry.py --color always           # force terminal colors
-python3 logsentry.py --output report.json     # save full report as JSON
-python3 logsentry.py --output report.csv      # save full report as CSV
-```
-
-`--user` may be repeated, for example:
-
-```bash
-python3 logsentry.py auth.log --user alice --user root
-```
-
-Tune the anomaly detector when your normal traffic differs from the sample:
-
-```bash
-python3 logsentry.py auth.log \
-  --window-minutes 10 \
+python3 logsentry.py sample_auth.log \
+  --window-minutes 2 \
   --brute-force-threshold 5 \
   --spray-threshold 8 \
   --distributed-threshold 8 \
   --enumeration-threshold 4
 ```
 
-<img width="1325" height="649" alt="image" src="https://github.com/user-attachments/assets/b7cb8ce0-22f6-48f3-bd7a-9b12103e14d7" />
-
-
-Use `--color auto` (default), `--color always`, or `--color never`. JSON output
-contains `summary`, `users`, and structured `alerts`; it never includes ANSI
-color codes.
-
-## Save a report file
-
-Use `--output` to save the complete analysis instead of copying terminal text.
-The format is inferred from the filename extension:
-
-```bash
-python3 logsentry.py auth.log --output reports/auth-report.json
-python3 logsentry.py auth.log --output reports/auth-report.csv
-```
-
-If the filename has no `.json` or `.csv` extension, select the format directly:
-
-```bash
-python3 logsentry.py auth.log --output reports/week1-result --format json
-python3 logsentry.py auth.log --output reports/week1-result --format csv
-```
-
-JSON preserves the nested `summary`, `users`, and `alerts` structure. CSV is
-spreadsheet-friendly: its `record_type` column identifies each row as
-`summary`, `user`, or `alert`. Missing output folders are created automatically.
-
-## Example report
+Expected alert (time may be shown from the fifth event):
 
 ```text
-Summary
-Total lines read: 1000
-Parsed successfully: 996
-Successful logins: 357
-Failed logins: 639
-Skipped / unsupported lines: 4
-
-User analysis
-User               Total    OK  Fail    Rate  IPs
--------------------------------------------------------
-alice                164    64   100   39.0%  122
+[CRITICAL] BRUTE_FORCE  ip=192.168.1.15 user=admin
+  ... | 5 signal(s) in 2 min — Repeated failures against one account from one source IP.
 ```
 
-The full JSON output also includes `first_seen` and `last_seen` for every
-account. The console table is deliberately compact for an easy demo video.
+This demonstrates the core rule: **flag an IP/account pair after 5 failed
+logins inside a 2-minute window.** The threshold and time window are command
+line options, so they can be changed without editing source code.
 
-## Generate the sample data
+## Features
+
+- Parses the supplied ISO-style format and common Linux `sshd`/syslog entries.
+- Supports successful and failed password, public-key, and keyboard-interactive
+  logins; accepts IPv4 and IPv6 addresses.
+- Safely skips malformed or unsupported lines and reports how many were
+  skipped.
+- Shows login totals, success rate, and unique source IPs per user.
+- Shows the top five source IPs by failed-login count (configurable).
+- Finds brute force, password spray, distributed attacks, username enumeration,
+  and success-after-failures signals.
+- Prints JSON or saves a complete JSON/CSV report for further analysis.
+- Uses bounded sliding-window queues: each event enters and leaves a queue once,
+  giving amortized **O(n)** detection for chronological logs.
+
+## Quick start
+
+```bash
+cd ~/SkillMe/logsentry
+python3 logsentry.py
+```
+
+Running without a log-file argument reads `sample_auth.log`. To analyse another
+authorised log:
+
+```bash
+python3 logsentry.py /path/to/auth.log
+```
+
+## Sample log and test scenario
+
+Recreate the deterministic sample any time with:
 
 ```bash
 python3 generate_sample_log.py
 ```
 
-The generator is deterministic (`seed = 2025`) and creates 1,000 lines: 996
-valid entries and 4 intentionally malformed lines.
+It generates 1,000 lines: 996 valid SSH events and four intentionally malformed
+lines. Inside it, the generator adds this controlled attack pattern:
 
-## Test
+| Item | Value |
+| --- | --- |
+| Source IP | `192.168.1.15` |
+| Target account | `admin` |
+| Failed attempts in the burst | 8 |
+| Time span | 105 seconds |
+| Week 2 detection setting | 5 failures in 2 minutes (triggers on attempt 5) |
+
+The rest of the generated traffic is normal-looking, mixed successful and
+failed authentication activity. This makes the alert easy to demonstrate while
+avoiding a sample that consists only of attack data.
+
+## Command-line options
+
+Run `python3 logsentry.py --help` to see the built-in help. The following table
+explains every option.
+
+| Option | What it does | Example |
+| --- | --- | --- |
+| `logfile` | Optional path to the log file. If omitted, uses `sample_auth.log`. | `python3 logsentry.py /var/log/auth.log` |
+| `--verbose` | Prints each parsed line and each skipped line; useful while checking parser support. | `--verbose` |
+| `--user USERNAME` | Limits the per-user table to one chosen user. It may be repeated for multiple users. Detection still examines the complete log. | `--user alice --user admin` |
+| `--window-minutes MINUTES` | Sets the sliding time window used by all attack detectors. Default: `15`. | `--window-minutes 2` |
+| `--brute-force-threshold COUNT` | Flags repeated failures from the **same IP against the same account**. Default: `8`. The older alias `--min-failures` means the same thing. | `--brute-force-threshold 5` |
+| `--spray-threshold COUNT` | Flags an IP that fails against this many **different accounts** within the window. Default: `6`. | `--spray-threshold 8` |
+| `--distributed-threshold COUNT` | Flags an account that receives failures from this many **different IPs** within the window. Default: `6`. | `--distributed-threshold 8` |
+| `--enumeration-threshold COUNT` | Flags an IP attempting this many different nonexistent usernames within the window. Default: `5`. | `--enumeration-threshold 4` |
+| `--compromise-threshold COUNT` | Flags a later successful login after this many failures from the same IP/account pair in the window. Default: `3`. | `--compromise-threshold 3` |
+| `--top-ips COUNT` | Chooses how many IPs to display in the failed-login ranking. Default: `5`. | `--top-ips 10` |
+| `--no-ip-report` | Hides the failed-IP ranking table. | `--no-ip-report` |
+| `--no-user-report` | Hides the per-user summary table. | `--no-user-report` |
+| `--no-alerts` | Hides the alert section but still performs analysis and export. | `--no-alerts` |
+| `--color auto\|always\|never` | Controls ANSI terminal colours. Default: `auto`. JSON never includes colour codes. | `--color never` |
+| `--json` | Prints the full structured result as JSON instead of the human-readable terminal report. | `--json` |
+| `--output FILE` | Saves the structured result to a file. The type is inferred from `.json` or `.csv`, unless `--format` is supplied. | `--output reports/week2.json` |
+| `--format json\|csv` | Explicitly selects output format, needed when the filename has no recognised extension. | `--output report --format csv` |
+
+All thresholds, the window, and `--top-ips` must be positive integers.
+
+## Detection rules
+
+| Alert | Trigger | Why it matters |
+| --- | --- | --- |
+| `BRUTE_FORCE` | Repeated failed attempts from one IP against one account. | Often indicates credential guessing. |
+| `PASSWORD_SPRAY` | One IP fails against many distinct accounts. | Often indicates testing a common password across many users. |
+| `DISTRIBUTED_ATTACK` | One account receives failures from many distinct IPs. | Can indicate a distributed guessing attempt. |
+| `USERNAME_ENUMERATION` | One IP tries many invalid usernames. | May indicate account discovery before an attack. |
+| `SUCCESS_AFTER_FAILURES` | A successful login follows repeated failures for the same IP/account pair. | Worth prompt investigation for possible account compromise. |
+
+Each unique attack profile is reported once per run to keep the report useful
+instead of repeating the same alert for every subsequent matching line.
+
+## Useful commands
+
+Analyse only selected users:
+
+```bash
+python3 logsentry.py sample_auth.log --user alice --user admin
+```
+
+Show the top 10 failed-login IPs and turn off colours for a clean screenshot:
+
+```bash
+python3 logsentry.py sample_auth.log --top-ips 10 --color never
+```
+
+Write JSON for another tool:
+
+```bash
+python3 logsentry.py sample_auth.log --output reports/week2-report.json
+```
+
+Write spreadsheet-friendly CSV:
+
+```bash
+python3 logsentry.py sample_auth.log --output reports/week2-report.csv
+```
+
+CSV rows have a `record_type` of `summary`, `user`, `failed_ip`, or `alert`, so
+one file can retain all report sections. Missing output folders are created
+automatically.
+
+## Input formats
+
+Project sample format:
+
+```text
+2025-01-15 10:23:45 sshd[1234]: Failed password for user alice from 192.168.1.15
+2025-01-15 10:24:02 sshd[1234]: Accepted password for user bob from 192.168.1.20
+```
+
+Common Linux syslog format:
+
+```text
+Jan 15 10:23:45 server-01 sshd[1234]: Failed password for root from 203.0.113.7 port 443 ssh2
+```
+
+Unsupported or malformed lines do not stop processing. They are counted as
+skipped, which makes parser limitations visible in the report.
+
+## Tests
+
+Run the test suite with Python's built-in `unittest`:
 
 ```bash
 python3 -m unittest -v
 ```
 
-The tests cover unknown usernames, Linux syslog entries, IPv6, invalid-user
-attempts, malformed records, file-level skipped-line counting, per-user
-aggregation, brute force, password spray, distributed attacks, username
-enumeration and success-after-failures detection.
+The tests cover parsing, malformed inputs, IPv6, invalid users, user and IP
+aggregation, report exports, every detection type, and the two key Week 2 cases:
+
+1. Five failures within two minutes are flagged as brute force.
+2. Five failures spread across an hour are **not** flagged with a two-minute
+   window.
+
+## Suggested Week 2 demo checklist
+
+1. Run the Week 2 command from the top of this README.
+2. Capture the `Top 5 source IPs by failed logins` table and `BRUTE_FORCE`
+   alert in a screenshot, or record a 30–60 second terminal demo.
+3. Run `python3 -m unittest -v` and capture the passing tests.
+4. Push the project to GitHub, include its link in a LinkedIn post, tag
+   `@SkillMe`, and submit the LinkedIn post URL on the internship dashboard.

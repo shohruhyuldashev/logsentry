@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from logsentry import (
+    analyze_failed_ips,
     analyze_users,
     detect_anomalies,
     export_report,
@@ -86,6 +87,18 @@ class UserAnalysisTests(unittest.TestCase):
         self.assertEqual(sam["unique_ips"], 2)
         self.assertEqual(sam["success_rate"], 50.0)
 
+    def test_ranks_ips_by_failed_logins(self):
+        entries = [
+            {"timestamp": "t1", "user": "sam", "ip": "10.0.0.1", "status": "FAILED"},
+            {"timestamp": "t2", "user": "lee", "ip": "10.0.0.1", "status": "FAILED"},
+            {"timestamp": "t3", "user": "sam", "ip": "10.0.0.2", "status": "FAILED"},
+            {"timestamp": "t4", "user": "sam", "ip": "10.0.0.3", "status": "SUCCESS"},
+        ]
+        report = analyze_failed_ips(entries)
+        self.assertEqual(report[0]["ip"], "10.0.0.1")
+        self.assertEqual(report[0]["failed"], 2)
+        self.assertEqual(report[0]["targeted_users"], 2)
+
 
 class AnomalyDetectionTests(unittest.TestCase):
     @staticmethod
@@ -108,6 +121,27 @@ class AnomalyDetectionTests(unittest.TestCase):
         }
         self.assertIn("BRUTE_FORCE", alert_types)
         self.assertIn("SUCCESS_AFTER_FAILURES", alert_types)
+
+    def test_flags_five_failures_inside_two_minutes(self):
+        entries = [self.entry(second, "admin", "10.0.0.50") for second in (0, 20, 40, 55)]
+        entries.append({
+            "timestamp": "2025-01-15 10:01:20", "user": "admin", "ip": "10.0.0.50",
+            "status": "FAILED", "event_type": "login",
+        })
+        alerts = detect_anomalies(entries, window_minutes=2, brute_force_threshold=5)
+        self.assertTrue(any(alert["type"] == "BRUTE_FORCE" for alert in alerts))
+
+    def test_does_not_flag_five_failures_spread_across_an_hour(self):
+        entries = [
+            {"timestamp": f"2025-01-15 {hour:02d}:00:00", "user": "admin", "ip": "10.0.0.50",
+             "status": "FAILED", "event_type": "login"}
+            for hour in (10, 10, 10, 10, 11)
+        ]
+        entries[1]["timestamp"] = "2025-01-15 10:15:00"
+        entries[2]["timestamp"] = "2025-01-15 10:30:00"
+        entries[3]["timestamp"] = "2025-01-15 10:45:00"
+        alerts = detect_anomalies(entries, window_minutes=2, brute_force_threshold=5)
+        self.assertFalse(any(alert["type"] == "BRUTE_FORCE" for alert in alerts))
 
     def test_detects_spray_distributed_and_enumeration(self):
         spray_entries = [

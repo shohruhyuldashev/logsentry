@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a reproducible 1000-line sample authentication log."""
+"""Generate a reproducible sample log with a deliberate brute-force burst."""
 
 import random
 from datetime import datetime, timedelta
@@ -33,7 +33,10 @@ def main() -> None:
 
     for index in range(VALID_LINE_COUNT):
         if 400 <= index < 408:
-            current += timedelta(seconds=random.randint(15, 60))
+            # Eight failures in 105 seconds.  This is an intentional Week 2
+            # test case: a threshold of five in two minutes fires on event 5,
+            # and the source IP also stands out in the Top 5 IP report.
+            current += timedelta(seconds=15)
             pid = random.randint(1200, 1299)
             valid_lines.append(
                 generate_line(current, pid, "admin", target_ip, "FAILED")
